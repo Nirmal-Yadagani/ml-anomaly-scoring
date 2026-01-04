@@ -14,14 +14,14 @@ from ingestion.db_reader import PostgresReader
 app = FastAPI(title="ML Anomaly Scoring Service")
 
 # Postgres connection
-LOCAL_DSN = 'postgresql://postgres:postgres@localhost:5432/waf_test'
+LOCAL_DSN = 'postgresql://postgres:postgres@localhost:5432/traffic_db'
 
 db = PostgresReader(LOCAL_DSN)
 
 # Runtime models
 baseline_model = IPBehavioralBaseline(LOCAL_DSN, alpha=0.1)
 iforest_model = IsolationForestModel(LOCAL_DSN, contamination=0.02)
-hybrid_model = HybridScorer(if_weight=0.6, baseline_weight=0.4, threshold=0.3)
+# hybrid_model = HybridScorer(if_weight=0.6, baseline_weight=0.4, threshold=0.3)
 
 buffer = TrafficBuffer(window="1min")
 inference_enabled = False
@@ -32,7 +32,7 @@ def cold_start():
     global inference_enabled, ips
     print("[BOOT] Loading IP list from DB")
     df_ips = db.fetch("""
-        SELECT src_ip FROM requests
+        SELECT src_ip FROM traffic_2026_01_02
         GROUP BY src_ip
         ORDER BY MAX(timestamp) DESC
         LIMIT 50;
@@ -40,7 +40,7 @@ def cold_start():
     ips = df_ips["src_ip"].tolist() if not df_ips.empty else []
 
     print("[BOOT] Training global Isolation Forest from DB")
-    iforest_model.fit(10_000)
+    iforest_model.fit(10000)
 
     print("[BOOT] Training per-IP baseline from DB")
     for ip in ips:
@@ -54,23 +54,24 @@ class IngestRequest(BaseModel):
     src_ip: str
     is_fraud: bool
 
-class ScoreRequest(BaseModel):
-    features: List[float]
-    src_ip: str
 
 @app.post("/ingest")
 def ingest_event(req: IngestRequest):
     buffer.add(np.array(req.features, dtype=float), req.src_ip)
     return {"status": "ok", "buffer": buffer.summary()}
 
+class ScoreRequest(BaseModel):
+    n_if: int
+    n_bsl: int
+    src_ip: str
+
 @app.post("/score")
 def score_event(req: ScoreRequest):
     if not inference_enabled:
         return {"score": 0.0, "status": "not_ready"}
-    x = np.array(req.features, dtype=float)
-    s1 = iforest_model.score(x)
-    s2 = baseline_model.score(x, req.src_ip)
-    return {"score": float(0.6*s1 + 0.4*s2), "status": "inference"}
+    s1 = iforest_model.score(req.n_if)
+    s2 = baseline_model.score(req.src_ip, req.n_bsl)
+    return {"score": float(0.6*abs(s1)-5/95 + 0.4*s2), "status": "inference"}
 
 @app.post("/update_baseline_ip")
 def update_baseline_ip(ip: str, samples: int):
@@ -87,8 +88,8 @@ def retrain_iforest(cfg: RetrainConfig):
     """Retrain Isolation Forest using legitimate samples from DB"""
     reader = PostgresReader(LOCAL_DSN)
     df = reader.fetch(f"""
-        SELECT * FROM requests
-        WHERE is_fraud = false
+        SELECT * FROM traffic_2026_01_02
+        WHERE model_label = 0
         ORDER BY timestamp DESC
         LIMIT {cfg.train_limit};
     """)

@@ -4,8 +4,7 @@ from psycopg2.extras import execute_batch
 
 API_INGEST = "http://localhost:8000/ingest"
 TABLE = "requests"
-LOCAL_DSN = "dbname=waf_test user=postgres password=postgres host=localhost port=5432"
-API_UPDATE = "http://localhost:8000/update_baseline_ip"
+LOCAL_DSN = 'postgresql://postgres:postgres@localhost:5432/waf_test'
 
 def gen_vec():
     return [random.uniform(5,120),random.uniform(1,20),random.uniform(20,200),
